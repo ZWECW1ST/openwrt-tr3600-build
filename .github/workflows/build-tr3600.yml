@@ -46,9 +46,10 @@ jobs:
       - name: Configure for Cudy TR3600 v1 + OpenClash
         working-directory: openwrt
         run: |
-          set +e
-          echo 'CONFIG_TARGET_mediatek=y' > .config
-          echo 'CONFIG_TARGET_mediatek_filogic=y' >> .config
+          set -e
+          # 1) 先生成基础 .config（此时所有 DEVICE 为 is not set）
+          make defconfig
+          # 2) 再追加目标设备符号与所需包（必须在 defconfig 之后）
           echo 'CONFIG_TARGET_mediatek_filogic_DEVICE_cudy_tr3600_v1=y' >> .config
           echo 'CONFIG_PACKAGE_luci=y' >> .config
           echo 'CONFIG_PACKAGE_luci-i18n-base-zh-cn=y' >> .config
@@ -62,20 +63,23 @@ jobs:
           echo 'CONFIG_PACKAGE_luci-lib-taskd=y' >> .config
           echo 'CONFIG_PACKAGE_luci-lib-xterm=y' >> .config
           echo 'CONFIG_PACKAGE_taskd=y' >> .config
-          make defconfig || echo "WARN: make defconfig returned non-zero, continuing"
-          echo '--- device check ---'
-          grep -E 'CONFIG_TARGET_mediatek_filogic_DEVICE_cudy_tr3600_v1=y' .config && echo "OK: target device set" || echo "WARN: cudy_tr3600_v1 not set as =y"
-          echo '--- full device lines ---'
-          grep -E 'CONFIG_TARGET_mediatek' .config | head -20
+          # 3) 锁定配置（image 列表已解析，设备符号有效，会保留）
+          make olddefconfig || echo "WARN: olddefconfig failed, make will resolve at build time"
+          # 4) 校验：设备符号必须存在且为 =y，否则直接失败中止（避免编译成错设备）
+          grep -qx 'CONFIG_TARGET_mediatek_filogic_DEVICE_cudy_tr3600_v1=y' .config || { echo "FATAL: cudy_tr3600_v1 not set, aborting"; exit 1; }
+          echo 'OK: target device cudy_tr3600_v1 is set'
           echo '--- package check ---'
           for p in luci-app-openclash luci-app-store dnsmasq-full taskd; do
-            grep -q "CONFIG_PACKAGE_$p=y" .config && echo "OK: $p" || echo "WARN: $p missing"
+            grep -qx "CONFIG_PACKAGE_$p=y" .config && echo "OK: $p" || echo "WARN: $p missing"
           done
-          true
+          echo '--- device lines ---'
+          grep -E 'CONFIG_TARGET_mediatek_filogic_DEVICE' .config | head -20
 
       - name: Build firmware
         working-directory: openwrt
         run: |
+          # 编译前再次确认目标设备符号仍在 .config
+          grep -qx 'CONFIG_TARGET_mediatek_filogic_DEVICE_cudy_tr3600_v1=y' .config || { echo "FATAL: device symbol lost before build"; exit 1; }
           make -j"$(nproc)" V=s 2>&1 | tee /tmp/build.log || true
           echo "=== build exit: ${PIPESTATUS[0]} ==="
           echo "=== last 80 lines of build log ==="
@@ -85,7 +89,14 @@ jobs:
 
       - name: List built images
         working-directory: openwrt
-        run: ls -lh bin/targets/mediatek/filogic/ || true
+        run: |
+          ls -lh bin/targets/mediatek/filogic/ || true
+          # 安全网：产物必须包含 cudy_tr3600-v1，否则视为失败（避免刷错设备砖机）
+          if ls bin/targets/mediatek/filogic/*cudy_tr3600* >/dev/null 2>&1; then
+            echo "OK: cudy_tr3600-v1 image present"
+          else
+            echo "FATAL: no cudy_tr3600-v1 image built (wrong device compiled)"; exit 1
+          fi
 
       - name: Upload firmware artifact
         uses: actions/upload-artifact@v4
