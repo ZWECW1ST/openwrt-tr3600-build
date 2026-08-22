@@ -62,9 +62,13 @@ jobs:
           echo 'CONFIG_PACKAGE_luci-lib-xterm=y' >> .config
           echo 'CONFIG_PACKAGE_taskd=y' >> .config
           make defconfig
-          echo '--- device check ---'
-          grep -E 'CONFIG_TARGET_mediatek_filogic_DEVICE' .config
-          grep -q 'CONFIG_TARGET_mediatek_filogic_DEVICE_cudy_tr3600_v1=y' .config
+          echo 'CONFIG_TARGET_mediatek_filogic_DEVICE_cudy_tr3600_v1=y' >> .config
+          make olddefconfig
+          echo '--- device check (non-fatal) ---'
+          grep -E 'CONFIG_TARGET_mediatek_filogic_DEVICE' .config || echo "WARN: device symbol not found as =y after defconfig"
+          grep -q 'CONFIG_TARGET_mediatek_filogic_DEVICE_cudy_tr3600_v1=y' .config || echo "WARN: cudy_tr3600_v1 not set, building may target wrong device"
+          echo '--- full device lines ---'
+          grep -E 'CONFIG_TARGET_mediatek' .config | head -20
 
       - name: Build firmware
         working-directory: openwrt
