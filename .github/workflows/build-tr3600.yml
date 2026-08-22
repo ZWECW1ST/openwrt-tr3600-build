@@ -6,7 +6,7 @@ on:
 jobs:
   build:
     runs-on: ubuntu-latest
-    timeout-minutes: 350
+    timeout-minutes: 360
 
     steps:
       - name: Maximize disk space
@@ -22,6 +22,12 @@ jobs:
           ref: agent/cudy-tr3600
           path: openwrt
 
+      - name: Add OpenClash feed
+        working-directory: openwrt
+        run: |
+          grep -q "openclash" feeds.conf.default || echo 'src-git openclash https://github.com/vernesong/OpenClash.git;main' >> feeds.conf.default
+          cat feeds.conf.default
+
       - name: Install build dependencies
         run: |
           sudo apt-get update -q
@@ -36,7 +42,7 @@ jobs:
           ./scripts/feeds update -a
           ./scripts/feeds install -a
 
-      - name: Configure for Cudy TR3600 v1
+      - name: Configure for Cudy TR3600 v1 + OpenClash
         working-directory: openwrt
         run: |
           echo 'CONFIG_TARGET_mediatek=y' > .config
@@ -44,6 +50,12 @@ jobs:
           echo 'CONFIG_TARGET_mediatek_filogic_DEVICE_cudy_tr3600_v1=y' >> .config
           echo 'CONFIG_PACKAGE_luci=y' >> .config
           echo 'CONFIG_PACKAGE_luci-i18n-base-zh-cn=y' >> .config
+          echo 'CONFIG_PACKAGE_luci-app-openclash=y' >> .config
+          echo 'CONFIG_PACKAGE_dnsmasq-full=y' >> .config
+          echo 'CONFIG_PACKAGE_bash=y' >> .config
+          echo 'CONFIG_PACKAGE_coreutils=y' >> .config
+          echo 'CONFIG_PACKAGE_ca-bundle=y' >> .config
+          echo 'CONFIG_PACKAGE_ip-full=y' >> .config
           make defconfig
           echo '--- device check ---'
           grep -E 'CONFIG_TARGET_mediatek_filogic_DEVICE' .config
