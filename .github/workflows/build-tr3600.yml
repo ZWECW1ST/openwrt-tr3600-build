@@ -69,7 +69,12 @@ jobs:
       - name: Build firmware
         working-directory: openwrt
         run: |
-          make -j"$(nproc)" || make -j1 V=s
+          make -j"$(nproc)" V=s 2>&1 | tee /tmp/build.log || true
+          echo "=== build exit: ${PIPESTATUS[0]} ==="
+          echo "=== last 80 lines of build log ==="
+          tail -80 /tmp/build.log
+          echo "=== searching for errors ==="
+          grep -iE "error:|ERROR:|fatal error|recipe for target|Failed to build|make\[.*\]: \*\*\*" /tmp/build.log | head -40 || echo "no explicit error lines found"
 
       - name: List built images
         working-directory: openwrt
