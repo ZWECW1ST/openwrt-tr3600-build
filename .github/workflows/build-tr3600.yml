@@ -57,7 +57,6 @@ jobs:
           echo 'CONFIG_PACKAGE_dnsmasq-full=y' >> .config
           echo 'CONFIG_PACKAGE_coreutils=y' >> .config
           echo 'CONFIG_PACKAGE_ca-bundle=y' >> .config
-          echo 'CONFIG_PACKAGE_ip-full=y' >> .config
           echo 'CONFIG_PACKAGE_luci-app-store=y' >> .config
           echo 'CONFIG_PACKAGE_luci-lib-taskd=y' >> .config
           echo 'CONFIG_PACKAGE_luci-lib-xterm=y' >> .config
