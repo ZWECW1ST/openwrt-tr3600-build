@@ -22,10 +22,11 @@ jobs:
           ref: agent/cudy-tr3600
           path: openwrt
 
-      - name: Add OpenClash feed
+      - name: Add OpenClash and iStore feeds
         working-directory: openwrt
         run: |
           grep -q "openclash" feeds.conf.default || echo 'src-git openclash https://github.com/vernesong/OpenClash.git;main' >> feeds.conf.default
+          grep -q "istore" feeds.conf.default || echo 'src-git istore https://github.com/linkease/istore;main' >> feeds.conf.default
           cat feeds.conf.default
 
       - name: Install build dependencies
@@ -56,6 +57,10 @@ jobs:
           echo 'CONFIG_PACKAGE_coreutils=y' >> .config
           echo 'CONFIG_PACKAGE_ca-bundle=y' >> .config
           echo 'CONFIG_PACKAGE_ip-full=y' >> .config
+          echo 'CONFIG_PACKAGE_luci-app-store=y' >> .config
+          echo 'CONFIG_PACKAGE_luci-lib-taskd=y' >> .config
+          echo 'CONFIG_PACKAGE_luci-lib-xterm=y' >> .config
+          echo 'CONFIG_PACKAGE_taskd=y' >> .config
           make defconfig
           echo '--- device check ---'
           grep -E 'CONFIG_TARGET_mediatek_filogic_DEVICE' .config
