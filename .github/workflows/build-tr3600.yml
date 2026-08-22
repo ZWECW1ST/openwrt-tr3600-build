@@ -55,7 +55,6 @@ jobs:
           echo 'CONFIG_PACKAGE_luci-i18n-base-zh-cn=y' >> .config
           echo 'CONFIG_PACKAGE_luci-app-openclash=y' >> .config
           echo 'CONFIG_PACKAGE_dnsmasq-full=y' >> .config
-          echo 'CONFIG_PACKAGE_bash=y' >> .config
           echo 'CONFIG_PACKAGE_coreutils=y' >> .config
           echo 'CONFIG_PACKAGE_ca-bundle=y' >> .config
           echo 'CONFIG_PACKAGE_ip-full=y' >> .config
@@ -80,12 +79,16 @@ jobs:
         run: |
           # 编译前再次确认目标设备符号仍在 .config
           grep -qx 'CONFIG_TARGET_mediatek_filogic_DEVICE_cudy_tr3600_v1=y' .config || { echo "FATAL: device symbol lost before build"; exit 1; }
-          make -j"$(nproc)" V=s 2>&1 | tee /tmp/build.log || true
+          # 先并行编译；若失败则用单线程重试以暴露真实错误（不静默吞掉）
+          if ! make -j"$(nproc)" V=s 2>&1 | tee /tmp/build.log; then
+            echo "=== parallel build failed, retrying single-threaded ==="
+            make -j1 V=s 2>&1 | tee /tmp/build.log
+          fi
           echo "=== build exit: ${PIPESTATUS[0]} ==="
           echo "=== last 80 lines of build log ==="
           tail -80 /tmp/build.log
           echo "=== searching for errors ==="
-          grep -iE "error:|ERROR:|fatal error|recipe for target|Failed to build|make\[.*\]: \*\*\*" /tmp/build.log | head -40 || echo "no explicit error lines found"
+          grep -iE "error:|ERROR:|fatal error|recipe for target|Failed to build|missing dependencies|make\[.*\]: \*\*\*" /tmp/build.log | head -40 || echo "no explicit error lines found"
 
       - name: List built images
         working-directory: openwrt
