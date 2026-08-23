@@ -90,6 +90,14 @@ jobs:
           CONFIG_PACKAGE_coreutils-stty=y
           EOF
           make olddefconfig
+          # 诊断：打印我们追加的每个包在 olddefconfig 后的真实状态（定位 out-of-sync 元凶）
+          echo "=== package resolve state after olddefconfig ==="
+          for p in luci-app-openclash luci-app-store dnsmasq-full bash curl ca-bundle ip-full ipset ruby ruby-yaml kmod-tun kmod-inet-diag unzip luci-lib-taskd luci-lib-xterm taskd libuci-lua tar mount-utils coreutils coreutils-stty; do
+            s=$(scripts/config --state "CONFIG_PACKAGE_$p" 2>/dev/null || echo "undef")
+            echo "  $p = $s"
+          done
+          echo "=== device symbol state ==="
+          scripts/config --state CONFIG_TARGET_mediatek_filogic_DEVICE_cudy_tr3600-v1 2>/dev/null || echo "device undef"
           # 校验1：设备符号必须存在
           grep -qx 'CONFIG_TARGET_mediatek_filogic_DEVICE_cudy_tr3600-v1=y' .config || { echo "FATAL: cudy_tr3600-v1 not set"; exit 1; }
           # 校验2：OpenClash/iStore 必须仍为 =y（若被 olddefconfig 因依赖缺失取消，立即失败并报告）
