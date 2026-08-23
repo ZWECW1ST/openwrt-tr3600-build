@@ -51,60 +51,49 @@ jobs:
           ./scripts/feeds install -a
 
       - name: Configure for Cudy TR3600 v1 + OpenClash + iStore
+        shell: bash {0}
         working-directory: openwrt
         run: |
           set +e
           make defconfig
-          # 显式列出目标设备与全部所需包。
-          # 注意：设备符号用连字符 cudy_tr3600-v1（对应 image/filogic.mk 的 define Device/cudy_tr3600-v1）
-          # OpenClash/iStore 的硬依赖必须全部列出，否则 olddefconfig 会因 DEPENDS 不满足而取消选择它们
-          cat >> .config <<'EOF'
-          CONFIG_TARGET_mediatek_filogic_DEVICE_cudy_tr3600-v1=y
-          CONFIG_PACKAGE_luci=y
-          CONFIG_PACKAGE_luci-base=y
-          CONFIG_PACKAGE_luci-lua-runtime=y
-          CONFIG_PACKAGE_luci-i18n-base-zh-cn=y
-          CONFIG_PACKAGE_luci-compat=y
-          # OpenClash 硬依赖
-          CONFIG_PACKAGE_luci-app-openclash=y
-          CONFIG_PACKAGE_dnsmasq-full=y
-          CONFIG_PACKAGE_bash=y
-          CONFIG_PACKAGE_curl=y
-          CONFIG_PACKAGE_ca-bundle=y
-          CONFIG_PACKAGE_ip-full=y
-          CONFIG_PACKAGE_ipset=y
-          CONFIG_PACKAGE_ruby=y
-          CONFIG_PACKAGE_ruby-yaml=y
-          CONFIG_PACKAGE_kmod-tun=y
-          CONFIG_PACKAGE_kmod-inet-diag=y
-          CONFIG_PACKAGE_unzip=y
-          # iStore 硬依赖
-          CONFIG_PACKAGE_luci-app-store=y
-          CONFIG_PACKAGE_luci-lib-taskd=y
-          CONFIG_PACKAGE_luci-lib-xterm=y
-          CONFIG_PACKAGE_taskd=y
-          CONFIG_PACKAGE_libuci-lua=y
-          CONFIG_PACKAGE_tar=y
-          CONFIG_PACKAGE_mount-utils=y
-          CONFIG_PACKAGE_coreutils=y
-          CONFIG_PACKAGE_coreutils-stty=y
-          EOF
-          make olddefconfig || echo "WARN: olddefconfig non-zero exit (will inspect state below)"
-          # 诊断：打印我们追加的每个包在 olddefconfig 后的真实状态（定位 out-of-sync 元凶）
-          echo "=== package resolve state after olddefconfig ==="
-          for p in luci-app-openclash luci-app-store dnsmasq-full bash curl ca-bundle ip-full ipset ruby ruby-yaml kmod-tun kmod-inet-diag unzip luci-lib-taskd luci-lib-xterm taskd libuci-lua tar mount-utils coreutils coreutils-stty; do
-            s=$(scripts/config --state "CONFIG_PACKAGE_$p" 2>/dev/null || echo "undef")
-            echo "  $p = $s"
+          # 用 scripts/config --set-val 直接写入符号值（绕过依赖检查，避免 olddefconfig 的 out-of-sync 拒绝）
+          # 设备符号用连字符 cudy_tr3600-v1（对应 image/filogic.mk 的 define Device/cudy_tr3600-v1）
+          SYMS=(
+            TARGET_mediatek_filogic_DEVICE_cudy_tr3600-v1
+            PACKAGE_luci PACKAGE_luci-base PACKAGE_luci-lua-runtime PACKAGE_luci-i18n-base-zh-cn PACKAGE_luci-compat
+            PACKAGE_luci-app-openclash PACKAGE_dnsmasq-full PACKAGE_bash PACKAGE_curl PACKAGE_ca-bundle
+            PACKAGE_ip-full PACKAGE_ipset PACKAGE_ruby PACKAGE_ruby-yaml PACKAGE_kmod-tun PACKAGE_kmod-inet-diag PACKAGE_unzip
+            PACKAGE_luci-app-store PACKAGE_luci-lib-taskd PACKAGE_luci-lib-xterm PACKAGE_taskd
+            PACKAGE_libuci-lua PACKAGE_tar PACKAGE_mount-utils PACKAGE_coreutils PACKAGE_coreutils-stty
+          )
+          for s in "${SYMS[@]}"; do
+            if ./scripts/config --set-val "CONFIG_$s" y 2>/dev/null; then
+              echo "SET OK: CONFIG_$s"
+            else
+              echo "SET FAIL: CONFIG_$s (symbol may not exist in this kconfig)"
+            fi
           done
-          echo "=== device symbol state ==="
-          scripts/config --state CONFIG_TARGET_mediatek_filogic_DEVICE_cudy_tr3600-v1 2>/dev/null || echo "device undef"
-          echo "=== DONE CONFIGURE DIAG (no build this run) ==="
+          # 非交互收敛：未决符号取默认，不报 out of sync
+          yes '' | make oldconfig >/dev/null 2>&1
+          echo "=== resolve state after set-val + oldconfig ==="
+          for s in "${SYMS[@]}"; do
+            st=$(scripts/config --state "CONFIG_$s" 2>/dev/null || echo "undef")
+            echo "  CONFIG_$s = $st"
+          done
+          # 守卫：设备符号与 OpenClash/iStore 必须 =y
+          for s in TARGET_mediatek_filogic_DEVICE_cudy_tr3600-v1 PACKAGE_luci-app-openclash PACKAGE_luci-app-store; do
+            if grep -qx "CONFIG_$s=y" .config; then echo "GUARD OK: $s"; else echo "GUARD FAIL: $s not =y"; fi
+          done
+          echo "=== DONE CONFIGURE ==="
 
       - name: Build firmware
-        if: false  # 本轮仅诊断配置，不编译
+        shell: bash {0}
         working-directory: openwrt
         run: |
+          set +e
           grep -qx 'CONFIG_TARGET_mediatek_filogic_DEVICE_cudy_tr3600-v1=y' .config || { echo "FATAL: device symbol lost before build"; exit 1; }
+          grep -qx 'CONFIG_PACKAGE_luci-app-openclash=y' .config || { echo "FATAL: openclash lost before build"; exit 1; }
+          grep -qx 'CONFIG_PACKAGE_luci-app-store=y' .config || { echo "FATAL: istore lost before build"; exit 1; }
           make -j"$(nproc)" V=s 2>&1 | tee /tmp/build.log || { echo "=== parallel failed, retry single-threaded ==="; make -j1 V=s 2>&1 | tee /tmp/build.log; }
 
       - name: Verify and upload firmware
