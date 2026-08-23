@@ -52,8 +52,13 @@ jobs:
           # 2) 再追加目标设备符号与所需包（必须在 defconfig 之后）
           echo 'CONFIG_TARGET_mediatek_filogic_DEVICE_cudy_tr3600_v1=y' >> .config
           echo 'CONFIG_PACKAGE_luci=y' >> .config
+          echo 'CONFIG_PACKAGE_luci-base=y' >> .config
+          echo 'CONFIG_PACKAGE_luci-lua-runtime=y' >> .config
           echo 'CONFIG_PACKAGE_luci-i18n-base-zh-cn=y' >> .config
           echo 'CONFIG_PACKAGE_luci-app-openclash=y' >> .config
+          echo 'CONFIG_PACKAGE_ruby=y' >> .config
+          echo 'CONFIG_PACKAGE_ruby-yaml=y' >> .config
+          echo 'CONFIG_PACKAGE_unzip=y' >> .config
           echo 'CONFIG_PACKAGE_dnsmasq-full=y' >> .config
           echo 'CONFIG_PACKAGE_coreutils=y' >> .config
           echo 'CONFIG_PACKAGE_ca-bundle=y' >> .config
@@ -61,6 +66,10 @@ jobs:
           echo 'CONFIG_PACKAGE_luci-lib-taskd=y' >> .config
           echo 'CONFIG_PACKAGE_luci-lib-xterm=y' >> .config
           echo 'CONFIG_PACKAGE_taskd=y' >> .config
+          echo 'CONFIG_PACKAGE_libuci-lua=y' >> .config
+          echo 'CONFIG_PACKAGE_tar=y' >> .config
+          echo 'CONFIG_PACKAGE_mount-utils=y' >> .config
+          echo 'CONFIG_PACKAGE_coreutils-stty=y' >> .config
           # 3) 锁定配置（image 列表已解析，设备符号有效，会保留）
           make olddefconfig || echo "WARN: olddefconfig failed, make will resolve at build time"
           # 4) 校验：设备符号必须存在且为 =y，否则直接失败中止（避免编译成错设备）
