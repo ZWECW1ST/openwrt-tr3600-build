@@ -68,7 +68,6 @@ jobs:
           echo 'CONFIG_PACKAGE_taskd=y' >> .config
           echo 'CONFIG_PACKAGE_libuci-lua=y' >> .config
           echo 'CONFIG_PACKAGE_tar=y' >> .config
-          echo 'CONFIG_PACKAGE_mount-utils=y' >> .config
           echo 'CONFIG_PACKAGE_coreutils-stty=y' >> .config
           # 3) 锁定配置（image 列表已解析，设备符号有效，会保留）
           make olddefconfig || echo "WARN: olddefconfig failed, make will resolve at build time"
