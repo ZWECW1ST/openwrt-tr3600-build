@@ -2,6 +2,7 @@ name: Build OpenWrt for Cudy TR3600
 
 on:
   workflow_dispatch:
+  # 监控自动化在检测到失败时会自动重跑本工作流
 
 jobs:
   build:
@@ -27,7 +28,6 @@ jobs:
         run: |
           grep -q "openclash" feeds.conf.default || echo 'src-git openclash https://github.com/vernesong/OpenClash.git;master' >> feeds.conf.default
           grep -q "istore" feeds.conf.default || echo 'src-git istore https://github.com/linkease/istore;main' >> feeds.conf.default
-          cat feeds.conf.default
 
       - name: Install build dependencies
         run: |
@@ -37,75 +37,63 @@ jobs:
             gettext git libncurses-dev libssl-dev python3 rsync swig unzip \
             zlib1g-dev file wget ca-certificates
 
-      - name: Update and install feeds
+      - name: Update and install feeds (retry on transient network errors)
         working-directory: openwrt
         run: |
-          ./scripts/feeds update -a
+          # openwrt.org 上游偶发 504，最多重试 5 次，每次间隔递增
+          for i in 1 2 3 4 5; do
+            if ./scripts/feeds update -a; then
+              echo "feeds update OK on attempt $i"
+              break
+            fi
+            echo "feeds update attempt $i failed, retrying in $((i*30))s..."
+            sleep $((i*30))
+          done
           ./scripts/feeds install -a
 
-      - name: Configure for Cudy TR3600 v1 + OpenClash
+      - name: Configure for Cudy TR3600 v1 + OpenClash + iStore
         working-directory: openwrt
         run: |
           set -e
-          # 1) 先生成基础 .config（此时所有 DEVICE 为 is not set）
           make defconfig
-          # 2) 再追加目标设备符号与所需包（必须在 defconfig 之后）
-          echo 'CONFIG_TARGET_mediatek_filogic_DEVICE_cudy_tr3600_v1=y' >> .config
-          echo 'CONFIG_PACKAGE_luci=y' >> .config
-          echo 'CONFIG_PACKAGE_luci-base=y' >> .config
-          echo 'CONFIG_PACKAGE_luci-lua-runtime=y' >> .config
-          echo 'CONFIG_PACKAGE_luci-i18n-base-zh-cn=y' >> .config
-          echo 'CONFIG_PACKAGE_luci-app-openclash=y' >> .config
-          echo 'CONFIG_PACKAGE_ruby=y' >> .config
-          echo 'CONFIG_PACKAGE_ruby-yaml=y' >> .config
-          echo 'CONFIG_PACKAGE_unzip=y' >> .config
-          echo 'CONFIG_PACKAGE_dnsmasq-full=y' >> .config
-          echo 'CONFIG_PACKAGE_coreutils=y' >> .config
-          echo 'CONFIG_PACKAGE_ca-bundle=y' >> .config
-          echo 'CONFIG_PACKAGE_luci-app-store=y' >> .config
-          echo 'CONFIG_PACKAGE_luci-lib-taskd=y' >> .config
-          echo 'CONFIG_PACKAGE_luci-lib-xterm=y' >> .config
-          echo 'CONFIG_PACKAGE_taskd=y' >> .config
-          echo 'CONFIG_PACKAGE_libuci-lua=y' >> .config
-          echo 'CONFIG_PACKAGE_tar=y' >> .config
-          echo 'CONFIG_PACKAGE_coreutils-stty=y' >> .config
-          # 3) 锁定配置（image 列表已解析，设备符号有效，会保留）
-          make olddefconfig || echo "WARN: olddefconfig failed, make will resolve at build time"
-          # 4) 校验：设备符号必须存在且为 =y，否则直接失败中止（避免编译成错设备）
-          grep -qx 'CONFIG_TARGET_mediatek_filogic_DEVICE_cudy_tr3600_v1=y' .config || { echo "FATAL: cudy_tr3600_v1 not set, aborting"; exit 1; }
-          echo 'OK: target device cudy_tr3600_v1 is set'
-          echo '--- package check ---'
-          for p in luci-app-openclash luci-app-store dnsmasq-full taskd; do
-            grep -qx "CONFIG_PACKAGE_$p=y" .config && echo "OK: $p" || echo "WARN: $p missing"
-          done
-          echo '--- device lines ---'
-          grep -E 'CONFIG_TARGET_mediatek_filogic_DEVICE' .config | head -20
+          cat >> .config <<'EOF'
+          CONFIG_TARGET_mediatek_filogic_DEVICE_cudy_tr3600_v1=y
+          CONFIG_PACKAGE_luci=y
+          CONFIG_PACKAGE_luci-base=y
+          CONFIG_PACKAGE_luci-lua-runtime=y
+          CONFIG_PACKAGE_luci-i18n-base-zh-cn=y
+          CONFIG_PACKAGE_luci-app-openclash=y
+          CONFIG_PACKAGE_ruby=y
+          CONFIG_PACKAGE_ruby-yaml=y
+          CONFIG_PACKAGE_unzip=y
+          CONFIG_PACKAGE_dnsmasq-full=y
+          CONFIG_PACKAGE_coreutils=y
+          CONFIG_PACKAGE_ca-bundle=y
+          CONFIG_PACKAGE_luci-app-store=y
+          CONFIG_PACKAGE_luci-lib-taskd=y
+          CONFIG_PACKAGE_luci-lib-xterm=y
+          CONFIG_PACKAGE_taskd=y
+          CONFIG_PACKAGE_libuci-lua=y
+          CONFIG_PACKAGE_tar=y
+          CONFIG_PACKAGE_coreutils-stty=y
+          EOF
+          make olddefconfig
+          # 设备符号校验（防错设备砖机）
+          grep -qx 'CONFIG_TARGET_mediatek_filogic_DEVICE_cudy_tr3600_v1=y' .config || { echo "FATAL: cudy_tr3600_v1 not set"; exit 1; }
 
       - name: Build firmware
         working-directory: openwrt
         run: |
-          # 编译前再次确认目标设备符号仍在 .config
           grep -qx 'CONFIG_TARGET_mediatek_filogic_DEVICE_cudy_tr3600_v1=y' .config || { echo "FATAL: device symbol lost before build"; exit 1; }
-          # 先并行编译；若失败则用单线程重试以暴露真实错误（不静默吞掉）
-          if ! make -j"$(nproc)" V=s 2>&1 | tee /tmp/build.log; then
-            echo "=== parallel build failed, retrying single-threaded ==="
-            make -j1 V=s 2>&1 | tee /tmp/build.log
-          fi
-          echo "=== build exit: ${PIPESTATUS[0]} ==="
-          echo "=== last 80 lines of build log ==="
-          tail -80 /tmp/build.log
-          echo "=== searching for errors ==="
-          grep -iE "error:|ERROR:|fatal error|recipe for target|Failed to build|missing dependencies|make\[.*\]: \*\*\*" /tmp/build.log | head -40 || echo "no explicit error lines found"
+          make -j"$(nproc)" V=s 2>&1 | tee /tmp/build.log || { echo "=== parallel failed, retry single-threaded ==="; make -j1 V=s 2>&1 | tee /tmp/build.log; }
 
-      - name: List built images
+      - name: Verify and upload firmware
         working-directory: openwrt
         run: |
-          ls -lh bin/targets/mediatek/filogic/ || true
-          # 安全网：产物必须包含 cudy_tr3600-v1，否则视为失败（避免刷错设备砖机）
           if ls bin/targets/mediatek/filogic/*cudy_tr3600* >/dev/null 2>&1; then
             echo "OK: cudy_tr3600-v1 image present"
           else
-            echo "FATAL: no cudy_tr3600-v1 image built (wrong device compiled)"; exit 1
+            echo "FATAL: no cudy_tr3600-v1 image built"; exit 1
           fi
 
       - name: Upload firmware artifact
