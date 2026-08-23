@@ -53,7 +53,7 @@ jobs:
       - name: Configure for Cudy TR3600 v1 + OpenClash + iStore
         working-directory: openwrt
         run: |
-          set -e
+          set +e
           make defconfig
           # 显式列出目标设备与全部所需包。
           # 注意：设备符号用连字符 cudy_tr3600-v1（对应 image/filogic.mk 的 define Device/cudy_tr3600-v1）
@@ -89,7 +89,7 @@ jobs:
           CONFIG_PACKAGE_coreutils=y
           CONFIG_PACKAGE_coreutils-stty=y
           EOF
-          make olddefconfig
+          make olddefconfig || echo "WARN: olddefconfig non-zero exit (will inspect state below)"
           # 诊断：打印我们追加的每个包在 olddefconfig 后的真实状态（定位 out-of-sync 元凶）
           echo "=== package resolve state after olddefconfig ==="
           for p in luci-app-openclash luci-app-store dnsmasq-full bash curl ca-bundle ip-full ipset ruby ruby-yaml kmod-tun kmod-inet-diag unzip luci-lib-taskd luci-lib-xterm taskd libuci-lua tar mount-utils coreutils coreutils-stty; do
@@ -98,23 +98,10 @@ jobs:
           done
           echo "=== device symbol state ==="
           scripts/config --state CONFIG_TARGET_mediatek_filogic_DEVICE_cudy_tr3600-v1 2>/dev/null || echo "device undef"
-          # 校验1：设备符号必须存在
-          grep -qx 'CONFIG_TARGET_mediatek_filogic_DEVICE_cudy_tr3600-v1=y' .config || { echo "FATAL: cudy_tr3600-v1 not set"; exit 1; }
-          # 校验2：OpenClash/iStore 必须仍为 =y（若被 olddefconfig 因依赖缺失取消，立即失败并报告）
-          for p in luci-app-openclash luci-app-store; do
-            if grep -qx "CONFIG_PACKAGE_$p=y" .config; then
-              echo "OK: $p selected"
-            else
-              echo "FATAL: $p was deselected by olddefconfig (missing dependency) -- aborting"
-              echo "--- 检查相关依赖符号 ---"
-              for d in bash ip-full mount-utils curl ipset ruby kmod-tun libuci-lua tar taskd; do
-                grep -qx "CONFIG_PACKAGE_$d=y" .config && echo "  dep OK: $d" || echo "  dep MISSING: $d"
-              done
-              exit 1
-            fi
-          done
+          echo "=== DONE CONFIGURE DIAG (no build this run) ==="
 
       - name: Build firmware
+        if: false  # 本轮仅诊断配置，不编译
         working-directory: openwrt
         run: |
           grep -qx 'CONFIG_TARGET_mediatek_filogic_DEVICE_cudy_tr3600-v1=y' .config || { echo "FATAL: device symbol lost before build"; exit 1; }
