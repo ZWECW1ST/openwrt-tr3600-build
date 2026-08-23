@@ -2,7 +2,6 @@ name: Build OpenWrt for Cudy TR3600
 
 on:
   workflow_dispatch:
-  # 监控自动化在检测到失败时会自动重跑本工作流
 
 jobs:
   build:
@@ -56,35 +55,61 @@ jobs:
         run: |
           set -e
           make defconfig
+          # 显式列出目标设备与全部所需包。
+          # 注意：设备符号用连字符 cudy_tr3600-v1（对应 image/filogic.mk 的 define Device/cudy_tr3600-v1）
+          # OpenClash/iStore 的硬依赖必须全部列出，否则 olddefconfig 会因 DEPENDS 不满足而取消选择它们
           cat >> .config <<'EOF'
-          CONFIG_TARGET_mediatek_filogic_DEVICE_cudy_tr3600_v1=y
+          CONFIG_TARGET_mediatek_filogic_DEVICE_cudy_tr3600-v1=y
           CONFIG_PACKAGE_luci=y
           CONFIG_PACKAGE_luci-base=y
           CONFIG_PACKAGE_luci-lua-runtime=y
           CONFIG_PACKAGE_luci-i18n-base-zh-cn=y
+          CONFIG_PACKAGE_luci-compat=y
+          # OpenClash 硬依赖
           CONFIG_PACKAGE_luci-app-openclash=y
+          CONFIG_PACKAGE_dnsmasq-full=y
+          CONFIG_PACKAGE_bash=y
+          CONFIG_PACKAGE_curl=y
+          CONFIG_PACKAGE_ca-bundle=y
+          CONFIG_PACKAGE_ip-full=y
+          CONFIG_PACKAGE_ipset=y
           CONFIG_PACKAGE_ruby=y
           CONFIG_PACKAGE_ruby-yaml=y
+          CONFIG_PACKAGE_kmod-tun=y
+          CONFIG_PACKAGE_kmod-inet-diag=y
           CONFIG_PACKAGE_unzip=y
-          CONFIG_PACKAGE_dnsmasq-full=y
-          CONFIG_PACKAGE_coreutils=y
-          CONFIG_PACKAGE_ca-bundle=y
+          # iStore 硬依赖
           CONFIG_PACKAGE_luci-app-store=y
           CONFIG_PACKAGE_luci-lib-taskd=y
           CONFIG_PACKAGE_luci-lib-xterm=y
           CONFIG_PACKAGE_taskd=y
           CONFIG_PACKAGE_libuci-lua=y
           CONFIG_PACKAGE_tar=y
+          CONFIG_PACKAGE_mount-utils=y
+          CONFIG_PACKAGE_coreutils=y
           CONFIG_PACKAGE_coreutils-stty=y
           EOF
           make olddefconfig
-          # 设备符号校验（防错设备砖机）
-          grep -qx 'CONFIG_TARGET_mediatek_filogic_DEVICE_cudy_tr3600_v1=y' .config || { echo "FATAL: cudy_tr3600_v1 not set"; exit 1; }
+          # 校验1：设备符号必须存在
+          grep -qx 'CONFIG_TARGET_mediatek_filogic_DEVICE_cudy_tr3600-v1=y' .config || { echo "FATAL: cudy_tr3600-v1 not set"; exit 1; }
+          # 校验2：OpenClash/iStore 必须仍为 =y（若被 olddefconfig 因依赖缺失取消，立即失败并报告）
+          for p in luci-app-openclash luci-app-store; do
+            if grep -qx "CONFIG_PACKAGE_$p=y" .config; then
+              echo "OK: $p selected"
+            else
+              echo "FATAL: $p was deselected by olddefconfig (missing dependency) -- aborting"
+              echo "--- 检查相关依赖符号 ---"
+              for d in bash ip-full mount-utils curl ipset ruby kmod-tun libuci-lua tar taskd; do
+                grep -qx "CONFIG_PACKAGE_$d=y" .config && echo "  dep OK: $d" || echo "  dep MISSING: $d"
+              done
+              exit 1
+            fi
+          done
 
       - name: Build firmware
         working-directory: openwrt
         run: |
-          grep -qx 'CONFIG_TARGET_mediatek_filogic_DEVICE_cudy_tr3600_v1=y' .config || { echo "FATAL: device symbol lost before build"; exit 1; }
+          grep -qx 'CONFIG_TARGET_mediatek_filogic_DEVICE_cudy_tr3600-v1=y' .config || { echo "FATAL: device symbol lost before build"; exit 1; }
           make -j"$(nproc)" V=s 2>&1 | tee /tmp/build.log || { echo "=== parallel failed, retry single-threaded ==="; make -j1 V=s 2>&1 | tee /tmp/build.log; }
 
       - name: Verify and upload firmware
