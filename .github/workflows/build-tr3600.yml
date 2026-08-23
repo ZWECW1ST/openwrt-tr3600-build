@@ -56,34 +56,42 @@ jobs:
         run: |
           set +e
           make defconfig
-          # 用 scripts/config --set-val 直接写入符号值（绕过依赖检查，避免 olddefconfig 的 out-of-sync 拒绝）
+          # OpenWrt 标准做法：直接追加包符号到 .config（package 层符号由 make 的 kconfig 子系统识别）
           # 设备符号用连字符 cudy_tr3600-v1（对应 image/filogic.mk 的 define Device/cudy_tr3600-v1）
-          SYMS=(
-            TARGET_mediatek_filogic_DEVICE_cudy_tr3600-v1
-            PACKAGE_luci PACKAGE_luci-base PACKAGE_luci-lua-runtime PACKAGE_luci-i18n-base-zh-cn PACKAGE_luci-compat
-            PACKAGE_luci-app-openclash PACKAGE_dnsmasq-full PACKAGE_bash PACKAGE_curl PACKAGE_ca-bundle
-            PACKAGE_ip-full PACKAGE_ipset PACKAGE_ruby PACKAGE_ruby-yaml PACKAGE_kmod-tun PACKAGE_kmod-inet-diag PACKAGE_unzip
-            PACKAGE_luci-app-store PACKAGE_luci-lib-taskd PACKAGE_luci-lib-xterm PACKAGE_taskd
-            PACKAGE_libuci-lua PACKAGE_tar PACKAGE_mount-utils PACKAGE_coreutils PACKAGE_coreutils-stty
-          )
-          for s in "${SYMS[@]}"; do
-            if ./scripts/config --set-val "CONFIG_$s" y 2>/dev/null; then
-              echo "SET OK: CONFIG_$s"
-            else
-              echo "SET FAIL: CONFIG_$s (symbol may not exist in this kconfig)"
-            fi
-          done
-          # 非交互收敛：未决符号取默认，不报 out of sync
-          yes '' | make oldconfig >/dev/null 2>&1
-          echo "=== resolve state after set-val + oldconfig ==="
-          for s in "${SYMS[@]}"; do
-            st=$(scripts/config --state "CONFIG_$s" 2>/dev/null || echo "undef")
-            echo "  CONFIG_$s = $st"
-          done
-          # 守卫：设备符号与 OpenClash/iStore 必须 =y
-          for s in TARGET_mediatek_filogic_DEVICE_cudy_tr3600-v1 PACKAGE_luci-app-openclash PACKAGE_luci-app-store; do
-            if grep -qx "CONFIG_$s=y" .config; then echo "GUARD OK: $s"; else echo "GUARD FAIL: $s not =y"; fi
-          done
+          cat >> .config <<'EOF'
+          CONFIG_TARGET_mediatek_filogic_DEVICE_cudy_tr3600-v1=y
+          CONFIG_PACKAGE_luci=y
+          CONFIG_PACKAGE_luci-base=y
+          CONFIG_PACKAGE_luci-lua-runtime=y
+          CONFIG_PACKAGE_luci-i18n-base-zh-cn=y
+          CONFIG_PACKAGE_luci-compat=y
+          CONFIG_PACKAGE_luci-app-openclash=y
+          CONFIG_PACKAGE_dnsmasq-full=y
+          CONFIG_PACKAGE_bash=y
+          CONFIG_PACKAGE_curl=y
+          CONFIG_PACKAGE_ca-bundle=y
+          CONFIG_PACKAGE_ip-full=y
+          CONFIG_PACKAGE_ipset=y
+          CONFIG_PACKAGE_ruby=y
+          CONFIG_PACKAGE_ruby-yaml=y
+          CONFIG_PACKAGE_kmod-tun=y
+          CONFIG_PACKAGE_kmod-inet-diag=y
+          CONFIG_PACKAGE_unzip=y
+          CONFIG_PACKAGE_luci-app-store=y
+          CONFIG_PACKAGE_luci-lib-taskd=y
+          CONFIG_PACKAGE_luci-lib-xterm=y
+          CONFIG_PACKAGE_taskd=y
+          CONFIG_PACKAGE_libuci-lua=y
+          CONFIG_PACKAGE_tar=y
+          CONFIG_PACKAGE_mount-utils=y
+          CONFIG_PACKAGE_coreutils=y
+          CONFIG_PACKAGE_coreutils-stty=y
+          EOF
+          # 收敛：olddefconfig 自动选依赖。若报 out-of-sync（某些符号不可满足），用 oldconfig 非交互兜底
+          make olddefconfig 2>&1 | tail -5 || { echo "WARN: olddefconfig non-zero, fallback to oldconfig"; yes '' | make oldconfig >/dev/null 2>&1; }
+          # 诊断：用 OpenWrt 官方 diffconfig 正确显示有效配置中我们关心的包
+          echo "=== diffconfig (effective config) ==="
+          ./scripts/diffconfig.sh 2>/dev/null | grep -E "cudy_tr3600|openclash|luci-app-store|luci |bash|ip-full|mount-utils|kmod-tun|kmod-inet-diag|ruby|dnsmasq-full|curl|ca-bundle|ipset|unzip|tar|libuci-lua|taskd|coreutils" | sort
           echo "=== DONE CONFIGURE ==="
 
       - name: Build firmware
