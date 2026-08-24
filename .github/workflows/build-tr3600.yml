@@ -86,6 +86,10 @@ jobs:
           CONFIG_PACKAGE_mount-utils=y
           CONFIG_PACKAGE_coreutils=y
           CONFIG_PACKAGE_coreutils-stty=y
+          # tar/curl 在快照版并行打包时会报 “missing dependencies” 竞态，显式声明其底层库依赖可消除该竞态
+          CONFIG_PACKAGE_libacl=y
+          CONFIG_PACKAGE_libattr=y
+          CONFIG_PACKAGE_libcurl=y
           EOF
           # 收敛：olddefconfig 自动选依赖。若报 out-of-sync（某些符号不可满足），用 oldconfig 非交互兜底
           make olddefconfig 2>&1 | tail -5 || { echo "WARN: olddefconfig non-zero, fallback to oldconfig"; yes '' | make oldconfig >/dev/null 2>&1; }
@@ -98,11 +102,21 @@ jobs:
         shell: bash {0}
         working-directory: openwrt
         run: |
-          set +e
+          set -o pipefail
           grep -qx 'CONFIG_TARGET_mediatek_filogic_DEVICE_cudy_tr3600-v1=y' .config || { echo "FATAL: device symbol lost before build"; exit 1; }
           grep -qx 'CONFIG_PACKAGE_luci-app-openclash=y' .config || { echo "FATAL: openclash lost before build"; exit 1; }
           grep -qx 'CONFIG_PACKAGE_luci-app-store=y' .config || { echo "FATAL: istore lost before build"; exit 1; }
-          make -j"$(nproc)" V=s 2>&1 | tee /tmp/build.log || { echo "=== parallel failed, retry single-threaded ==="; make -j1 V=s 2>&1 | tee /tmp/build.log; }
+          # 预编译常被并行打包竞态影响的依赖库，确保 *.provides 已落盘，避免 tar/curl 报 “missing dependencies”
+          for lib in package/libacl/compile package/libattr/compile package/libcurl/compile package/libopenssl/compile; do
+            make $lib -j"$(nproc)" V=s || make $lib -j1 V=s
+          done
+          # 主编译：并行优先；pipefail 确保退出码正确传递，失败后自动单线程重试（修复此前 tee 吞码导致重试不触发的问题）
+          make -j"$(nproc)" V=s 2>&1 | tee /tmp/build.log
+          BUILD_RC=${PIPESTATUS[0]}
+          if [ "$BUILD_RC" -ne 0 ]; then
+            echo "=== parallel build failed (rc=$BUILD_RC), retrying single-threaded ==="
+            make -j1 V=s 2>&1 | tee /tmp/build.log
+          fi
 
       - name: Verify and upload firmware
         working-directory: openwrt
