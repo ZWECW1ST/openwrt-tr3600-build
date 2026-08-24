@@ -96,6 +96,9 @@ jobs:
           CONFIG_PACKAGE_libipset=y
           # ip-full 依赖共享库 libbpf（libbpf.so.1），同样需显式选中，避免打包报 missing dependencies
           CONFIG_PACKAGE_libbpf=y
+          # libbpf 同时依赖共享库 libelf（libelf.so.1，由 package/libs/elfutils 的 libelf 包提供）；
+          # 曾因未显式选中导致 libbpf 打包报 missing dependencies（run 32694531019）
+          CONFIG_PACKAGE_libelf=y
           # util-linux 内部库（mount-utils 经 DEPENDS 需要，但未被自动选中）：
           CONFIG_PACKAGE_libblkid=y
           CONFIG_PACKAGE_libmount=y
