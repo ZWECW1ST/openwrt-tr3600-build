@@ -59,13 +59,26 @@ jobs:
           make defconfig
           # 2) OpenWrt 标准做法：直接追加包符号到 .config（package 层符号由 make 的 kconfig 子系统识别）。
           #    设备符号用连字符 cudy_tr3600-v1（对应 image/filogic.mk 的 define Device/cudy_tr3600-v1）。
-          #    只声明“顶层功能包”，其底层依赖（luci-base/rpcd/ucode/各类 lib*）交给 make defconfig 自动 select，
-          #    避免此前“逐个补底层库打地鼠”反而因路径/包名变动（如 package/libs/acl 在 SNAPSHOT 已不存在）而失效。
+          #
+          #    ⚠️ 关键历史教训（第22/27轮）：第二次若用 make defconfig 收敛，它会“重新评估并禁用依赖看似不满足
+          #       的 =y 符号”——把 luci-app-store 直接丢掉（diffconfig 里完全消失），导致 FATAL: istore lost。
+          #       故必须显式声明 luci-app-store 经 luci.mk 隐含的 luci 运行时链（luci-lua-runtime 等），
+          #       确保其依赖可满足、defconfig/olddefconfig 都不会丢它。
+          #    ⚠️ 关键历史教训（第19-21轮）：olddefconfig 不会把追加包的“DEPENDS 依赖库”自动 select 进来，
+          #       所以所有底层库包（lib*/zlib/libruby 等）必须在此显式声明，否则打包报 missing dependencies。
           cat >> .config <<'EOF'
           CONFIG_TARGET_mediatek_filogic_DEVICE_cudy_tr3600-v1=y
           CONFIG_PACKAGE_luci=y
+          CONFIG_PACKAGE_luci-base=y
+          CONFIG_PACKAGE_luci-lua-runtime=y
+          CONFIG_PACKAGE_luci-light=y
+          CONFIG_PACKAGE_luci-compat=y
+          CONFIG_PACKAGE_luci-i18n-base-zh-cn=y
           CONFIG_PACKAGE_luci-app-openclash=y
           CONFIG_PACKAGE_luci-app-store=y
+          CONFIG_PACKAGE_luci-lib-taskd=y
+          CONFIG_PACKAGE_luci-lib-xterm=y
+          CONFIG_PACKAGE_taskd=y
           CONFIG_PACKAGE_dnsmasq-full=y
           CONFIG_PACKAGE_bash=y
           CONFIG_PACKAGE_curl=y
@@ -76,21 +89,41 @@ jobs:
           CONFIG_PACKAGE_ruby-yaml=y
           CONFIG_PACKAGE_kmod-tun=y
           CONFIG_PACKAGE_kmod-inet-diag=y
+          CONFIG_PACKAGE_kmod-ipt-ipset=y
           CONFIG_PACKAGE_unzip=y
-          CONFIG_PACKAGE_luci-lib-taskd=y
-          CONFIG_PACKAGE_luci-lib-xterm=y
-          CONFIG_PACKAGE_taskd=y
           CONFIG_PACKAGE_libuci-lua=y
           CONFIG_PACKAGE_tar=y
           CONFIG_PACKAGE_mount-utils=y
           CONFIG_PACKAGE_coreutils=y
           CONFIG_PACKAGE_coreutils-stty=y
+          # 底层库包显式声明（olddefconfig 不自动 select 依赖库，必须手动列出，否则打包 missing dependencies）
+          CONFIG_PACKAGE_libacl=y
+          CONFIG_PACKAGE_libattr=y
+          CONFIG_PACKAGE_libcurl=y
+          CONFIG_PACKAGE_libipset=y
+          CONFIG_PACKAGE_libbpf=y
+          CONFIG_PACKAGE_libelf=y
+          CONFIG_PACKAGE_libblkid=y
+          CONFIG_PACKAGE_libmount=y
+          CONFIG_PACKAGE_libsmartcols=y
+          CONFIG_PACKAGE_libuuid=y
+          CONFIG_PACKAGE_libfdisk=y
+          CONFIG_PACKAGE_libncurses=y
+          CONFIG_PACKAGE_libreadline=y
+          CONFIG_PACKAGE_libgmp=y
+          CONFIG_PACKAGE_libffi=y
+          CONFIG_PACKAGE_libyaml=y
+          CONFIG_PACKAGE_libopenssl=y
+          CONFIG_PACKAGE_zlib=y
+          CONFIG_PACKAGE_libruby=y
           EOF
-          # 3) 再次 defconfig：把刚追加的顶层包及其整条 DEPENDS 依赖链（luci-base/rpcd/ucode/lib*/zlib…）一次性 select 进 .config。
-          #    ⚠️ 绝不使用 `olddefconfig || yes '' | make oldconfig`：olddefconfig 在 SNAPSHOT 易报 out-of-sync，
-          #       而 oldconfig 会按默认值把“新增未决”符号全填 N，从而清空刚追加包的整个依赖子树（第26轮正是因此
-          #       package/install Error 55）。make defconfig 只补全、不丢弃已显式 =y 的包。
-          make defconfig
+          # 3) 收敛：用 make olddefconfig（保留所有显式 =y，包括 luci-app-store，绝不丢包）。
+          #    ⚠️ 不要用 make defconfig：defconfig 会重新评估并“禁用依赖看似不满足”的 =y 符号，
+          #       把 luci-app-store 丢掉（第22/27轮正是因此 FATAL: istore lost）。
+          #    ⚠️ 绝不要 `|| yes '' | make oldconfig`：oldconfig 会按默认值把新增未决符号填 N，
+          #       清空依赖子树（第26轮因此 package/install Error 55）。
+          #    olddefconfig 在“先 defconfig 再 cat>>”流程下不会 out-of-sync（out-of-sync 仅发生在用 scripts/config 错写时，第15-18轮）。
+          make olddefconfig
           # 4) 诊断：用 OpenWrt 官方 diffconfig 正确显示有效配置中我们关心的包
           echo "=== diffconfig (effective config) ==="
           ./scripts/diffconfig.sh 2>/dev/null | grep -E "cudy_tr3600|openclash|luci-app-store|luci-base|rpcd|ucode|bash|ip-full|mount-utils|kmod-tun|kmod-inet-diag|ruby|dnsmasq-full|curl|ca-bundle|ipset|unzip|tar|libuci-lua|taskd|coreutils" | sort
@@ -112,7 +145,7 @@ jobs:
         working-directory: openwrt
         run: |
           set -o pipefail
-          # 守卫：复用 Configure 已验证的关键符号（defconfig 不会丢包，这里二次确认）
+          # 守卫：复用 Configure 已验证的关键符号（olddefconfig 不丢已显式 =y 的包，这里二次确认）
           grep -qx 'CONFIG_TARGET_mediatek_filogic_DEVICE_cudy_tr3600-v1=y' .config || { echo "FATAL: device symbol lost before build"; exit 1; }
           grep -qx 'CONFIG_PACKAGE_luci-app-openclash=y' .config || { echo "FATAL: openclash lost before build"; exit 1; }
           grep -qx 'CONFIG_PACKAGE_luci-app-store=y' .config || { echo "FATAL: istore lost before build"; exit 1; }
