@@ -54,18 +54,18 @@ jobs:
         shell: bash {0}
         working-directory: openwrt
         run: |
-          set +e
+          set -e
+          # 1) 先生成默认配置（基于当前 SNAPSHOT feeds 的真实菜单，不会产生 out-of-sync）
           make defconfig
-          # OpenWrt 标准做法：直接追加包符号到 .config（package 层符号由 make 的 kconfig 子系统识别）
-          # 设备符号用连字符 cudy_tr3600-v1（对应 image/filogic.mk 的 define Device/cudy_tr3600-v1）
+          # 2) OpenWrt 标准做法：直接追加包符号到 .config（package 层符号由 make 的 kconfig 子系统识别）。
+          #    设备符号用连字符 cudy_tr3600-v1（对应 image/filogic.mk 的 define Device/cudy_tr3600-v1）。
+          #    只声明“顶层功能包”，其底层依赖（luci-base/rpcd/ucode/各类 lib*）交给 make defconfig 自动 select，
+          #    避免此前“逐个补底层库打地鼠”反而因路径/包名变动（如 package/libs/acl 在 SNAPSHOT 已不存在）而失效。
           cat >> .config <<'EOF'
           CONFIG_TARGET_mediatek_filogic_DEVICE_cudy_tr3600-v1=y
           CONFIG_PACKAGE_luci=y
-          CONFIG_PACKAGE_luci-base=y
-          CONFIG_PACKAGE_luci-lua-runtime=y
-          CONFIG_PACKAGE_luci-i18n-base-zh-cn=y
-          CONFIG_PACKAGE_luci-compat=y
           CONFIG_PACKAGE_luci-app-openclash=y
+          CONFIG_PACKAGE_luci-app-store=y
           CONFIG_PACKAGE_dnsmasq-full=y
           CONFIG_PACKAGE_bash=y
           CONFIG_PACKAGE_curl=y
@@ -77,7 +77,6 @@ jobs:
           CONFIG_PACKAGE_kmod-tun=y
           CONFIG_PACKAGE_kmod-inet-diag=y
           CONFIG_PACKAGE_unzip=y
-          CONFIG_PACKAGE_luci-app-store=y
           CONFIG_PACKAGE_luci-lib-taskd=y
           CONFIG_PACKAGE_luci-lib-xterm=y
           CONFIG_PACKAGE_taskd=y
@@ -86,50 +85,25 @@ jobs:
           CONFIG_PACKAGE_mount-utils=y
           CONFIG_PACKAGE_coreutils=y
           CONFIG_PACKAGE_coreutils-stty=y
-          # ⚠️ 关键修正：olddefconfig 不会补全追加包的依赖库（ruby→libruby/zlib 等会保持 not set），
-          # 导致打包报 “missing dependencies”。已改用 make defconfig 自动 select 所有 DEPENDS+ 依赖；
-          # 以下仍显式声明底层库包作为双保险（防止个别 SNAPSHOT 版本 defconfig 补全不全）：
-          CONFIG_PACKAGE_libacl=y
-          CONFIG_PACKAGE_libattr=y
-          CONFIG_PACKAGE_libcurl=y
-          # ipset 依赖共享库 libipset（libipset.so.13），需显式选中，避免打包报 missing dependencies
-          CONFIG_PACKAGE_libipset=y
-          # ip-full 依赖共享库 libbpf（libbpf.so.1），同样需显式选中，避免打包报 missing dependencies
-          CONFIG_PACKAGE_libbpf=y
-          # libbpf 同时依赖共享库 libelf（libelf.so.1，由 package/libs/elfutils 的 libelf 包提供）；
-          # 曾因未显式选中导致 libbpf 打包报 missing dependencies（run 32694531019）
-          CONFIG_PACKAGE_libelf=y
-          # util-linux 内部库（mount-utils 经 DEPENDS 需要，但未被自动选中）：
-          CONFIG_PACKAGE_libblkid=y
-          CONFIG_PACKAGE_libmount=y
-          CONFIG_PACKAGE_libsmartcols=y
-          CONFIG_PACKAGE_libuuid=y
-          CONFIG_PACKAGE_libfdisk=y
-          # bash / ruby 运行所需库（防止后续再因缺少 provides 失败）：
-          CONFIG_PACKAGE_libncurses=y
-          CONFIG_PACKAGE_libreadline=y
-          CONFIG_PACKAGE_libgmp=y
-          CONFIG_PACKAGE_libffi=y
-          CONFIG_PACKAGE_libyaml=y
-          CONFIG_PACKAGE_libopenssl=y
-          # ruby 运行时直接依赖（其 DEPENDS +libruby/+zlib 需 defconfig 补全，这里显式双保险）
-          CONFIG_PACKAGE_zlib=y
-          CONFIG_PACKAGE_libruby=y
           EOF
-          # 收敛：必须用 make olddefconfig（而非 make defconfig）！
-          # 原因：第二次 make defconfig 会基于依赖链重新规范化，把显式 =y 但依赖“看似不满足”的
-          # 追加包（如 luci-app-store，其依赖已在 cat>> 中显式 =y）降级为 not set 并丢弃，
-          # 导致打包/守卫失败（第22轮正是因此 FATAL: istore lost）。
-          # olddefconfig 只补全默认值、保留所有显式 =y（含 luci-app-store 及全部底层库 lib*/zlib/libruby），
-          # 不会丢弃已选包。本配置已在 cat>> 块显式声明所有依赖库，olddefconfig 不会再出现 missing dependencies。
-          make olddefconfig 2>&1 | tail -5 || { echo "WARN: olddefconfig non-zero, fallback to oldconfig"; yes '' | make oldconfig >/dev/null 2>&1; }
-          # 诊断：用 OpenWrt 官方 diffconfig 正确显示有效配置中我们关心的包
+          # 3) 再次 defconfig：把刚追加的顶层包及其整条 DEPENDS 依赖链（luci-base/rpcd/ucode/lib*/zlib…）一次性 select 进 .config。
+          #    ⚠️ 绝不使用 `olddefconfig || yes '' | make oldconfig`：olddefconfig 在 SNAPSHOT 易报 out-of-sync，
+          #       而 oldconfig 会按默认值把“新增未决”符号全填 N，从而清空刚追加包的整个依赖子树（第26轮正是因此
+          #       package/install Error 55）。make defconfig 只补全、不丢弃已显式 =y 的包。
+          make defconfig
+          # 4) 诊断：用 OpenWrt 官方 diffconfig 正确显示有效配置中我们关心的包
           echo "=== diffconfig (effective config) ==="
-          ./scripts/diffconfig.sh 2>/dev/null | grep -E "cudy_tr3600|openclash|luci-app-store|luci |bash|ip-full|mount-utils|kmod-tun|kmod-inet-diag|ruby|dnsmasq-full|curl|ca-bundle|ipset|unzip|tar|libuci-lua|taskd|coreutils" | sort
-          # 守卫：确保关键包确实进入 .config（defconfig/olddefconfig 可能丢弃依赖看似不满足的追加包）。
-          # 若缺失，直接在 Configure 阶段 fail，避免拖到 Build 守卫才暴露。
-          for sym in CONFIG_TARGET_mediatek_filogic_DEVICE_cudy_tr3600-v1=y CONFIG_PACKAGE_luci-app-openclash=y CONFIG_PACKAGE_luci-app-store=y; do
-            if ! grep -qx "$sym" .config; then echo "FATAL: $sym missing after configure (dependency not satisfied or dropped)"; exit 1; fi
+          ./scripts/diffconfig.sh 2>/dev/null | grep -E "cudy_tr3600|openclash|luci-app-store|luci-base|rpcd|ucode|bash|ip-full|mount-utils|kmod-tun|kmod-inet-diag|ruby|dnsmasq-full|curl|ca-bundle|ipset|unzip|tar|libuci-lua|taskd|coreutils" | sort
+          # 5) 守卫：确保关键功能包及其**基础依赖**确实进入 .config。仅查顶层包会被“半成品配置”放行
+          #    （第26轮 luci-app-store=y 仍在，但其依赖的 luci-base/rpcd/ucode 已被清空），故必须校验基础子树。
+          for sym in \
+            CONFIG_TARGET_mediatek_filogic_DEVICE_cudy_tr3600-v1=y \
+            CONFIG_PACKAGE_luci-app-openclash=y \
+            CONFIG_PACKAGE_luci-app-store=y \
+            CONFIG_PACKAGE_luci-base=y \
+            CONFIG_PACKAGE_rpcd=y \
+            CONFIG_PACKAGE_ucode=y ; do
+            if ! grep -qx "$sym" .config; then echo "FATAL: $sym missing after configure (dependency not satisfied or dropped by defconfig)"; exit 1; fi
           done
           echo "=== DONE CONFIGURE ==="
 
@@ -138,19 +112,18 @@ jobs:
         working-directory: openwrt
         run: |
           set -o pipefail
+          # 守卫：复用 Configure 已验证的关键符号（defconfig 不会丢包，这里二次确认）
           grep -qx 'CONFIG_TARGET_mediatek_filogic_DEVICE_cudy_tr3600-v1=y' .config || { echo "FATAL: device symbol lost before build"; exit 1; }
           grep -qx 'CONFIG_PACKAGE_luci-app-openclash=y' .config || { echo "FATAL: openclash lost before build"; exit 1; }
           grep -qx 'CONFIG_PACKAGE_luci-app-store=y' .config || { echo "FATAL: istore lost before build"; exit 1; }
-          # 预编译所有会被并行打包竞态影响的“库包”（含 util-linux 内部库），单线程干净构建，
-          # 确保 *.provides 先落盘，避免 mount-utils/tar/curl 等报 “missing dependencies”
-          for lib in package/utils/util-linux/compile package/libs/acl/compile package/libs/attr/compile package/libs/openssl/compile package/libs/curl/compile package/libs/zlib/compile; do
-            echo "=== prebuild $lib (single-threaded) ==="
-            make $lib -j1 V=s || { echo "WARN: prebuild $lib failed, will rely on main build retry"; }
-          done
-          # 主编译：并行优先；若遇并行打包竞态（missing dependencies），重新运行 make -j 会收敛
-          # （更多包的 *.provides 已落盘），最多重试 3 次；最后一次用 -j1 兜底
+          # 主编译：并行优先。OpenWrt 的 make 会按依赖顺序先编译后打包，多数“missing dependencies”
+          # 是并行打包竞态（某包的 *.provides 尚未落盘）。重跑 make -j 会随 .provides 累积而收敛，
+          # 最多重试 3 次；最后一次用 -j1 兜底（彻底避免并行竞态）。
+          # 注：已删除旧的“硬编码预编译 package/libs/acl/.compile 等”步骤——这些路径在 SNAPSHOT 已不存在
+          #     （No rule to make target），反而导致 Configure 之后立即失败（第25/26轮教训）。
           ATTEMPT=0
           MAX=3
+          RC=1
           while [ "$ATTEMPT" -lt "$MAX" ]; do
             ATTEMPT=$((ATTEMPT+1))
             echo "=== main build attempt $ATTEMPT/$MAX (parallel) ==="
@@ -160,12 +133,14 @@ jobs:
               echo "=== BUILD OK on attempt $ATTEMPT ==="
               break
             fi
-            echo "=== attempt $ATTEMPT failed rc=$RC, will retry (converging) ==="
+            echo "=== attempt $ATTEMPT failed rc=$RC, will retry (converging provides) ==="
           done
           if [ "$RC" -ne 0 ]; then
             echo "=== parallel retries exhausted, last-resort single-threaded ==="
             make -j1 V=s 2>&1 | tee /tmp/build.log
+            RC=${PIPESTATUS[0]}
           fi
+          exit $RC
 
       - name: Verify and upload firmware
         working-directory: openwrt
