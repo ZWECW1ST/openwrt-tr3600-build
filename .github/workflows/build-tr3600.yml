@@ -92,6 +92,8 @@ jobs:
           CONFIG_PACKAGE_libacl=y
           CONFIG_PACKAGE_libattr=y
           CONFIG_PACKAGE_libcurl=y
+          # ipset 依赖共享库 libipset（libipset.so.13），需显式选中，避免打包报 missing dependencies
+          CONFIG_PACKAGE_libipset=y
           # util-linux 内部库（mount-utils 经 DEPENDS 需要，但未被自动选中）：
           CONFIG_PACKAGE_libblkid=y
           CONFIG_PACKAGE_libmount=y
