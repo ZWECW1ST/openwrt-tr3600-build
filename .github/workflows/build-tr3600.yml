@@ -109,13 +109,21 @@ jobs:
           CONFIG_PACKAGE_zlib=y
           CONFIG_PACKAGE_libruby=y
           EOF
-          # 收敛：必须用 make defconfig（而非 olddefconfig）！olddefconfig 不会重新评估已追加包的
-          # DEPENDS +xxx 依赖链，导致 ruby→libruby/zlib/libgmp 等子库保持 not set、无 *.provides，
-          # 打包时误报 “missing dependencies”。make defconfig 会重新解析并自动 select 所有依赖库。
-          make defconfig 2>&1 | tail -5 || { echo "WARN: defconfig non-zero, fallback to oldconfig"; yes '' | make oldconfig >/dev/null 2>&1; }
+          # 收敛：必须用 make olddefconfig（而非 make defconfig）！
+          # 原因：第二次 make defconfig 会基于依赖链重新规范化，把显式 =y 但依赖“看似不满足”的
+          # 追加包（如 luci-app-store，其依赖已在 cat>> 中显式 =y）降级为 not set 并丢弃，
+          # 导致打包/守卫失败（第22轮正是因此 FATAL: istore lost）。
+          # olddefconfig 只补全默认值、保留所有显式 =y（含 luci-app-store 及全部底层库 lib*/zlib/libruby），
+          # 不会丢弃已选包。本配置已在 cat>> 块显式声明所有依赖库，olddefconfig 不会再出现 missing dependencies。
+          make olddefconfig 2>&1 | tail -5 || { echo "WARN: olddefconfig non-zero, fallback to oldconfig"; yes '' | make oldconfig >/dev/null 2>&1; }
           # 诊断：用 OpenWrt 官方 diffconfig 正确显示有效配置中我们关心的包
           echo "=== diffconfig (effective config) ==="
           ./scripts/diffconfig.sh 2>/dev/null | grep -E "cudy_tr3600|openclash|luci-app-store|luci |bash|ip-full|mount-utils|kmod-tun|kmod-inet-diag|ruby|dnsmasq-full|curl|ca-bundle|ipset|unzip|tar|libuci-lua|taskd|coreutils" | sort
+          # 守卫：确保关键包确实进入 .config（defconfig/olddefconfig 可能丢弃依赖看似不满足的追加包）。
+          # 若缺失，直接在 Configure 阶段 fail，避免拖到 Build 守卫才暴露。
+          for sym in CONFIG_TARGET_mediatek_filogic_DEVICE_cudy_tr3600-v1=y CONFIG_PACKAGE_luci-app-openclash=y CONFIG_PACKAGE_luci-app-store=y; do
+            if ! grep -qx "$sym" .config; then echo "FATAL: $sym missing after configure (dependency not satisfied or dropped)"; exit 1; fi
+          done
           echo "=== DONE CONFIGURE ==="
 
       - name: Build firmware
