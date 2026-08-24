@@ -86,10 +86,9 @@ jobs:
           CONFIG_PACKAGE_mount-utils=y
           CONFIG_PACKAGE_coreutils=y
           CONFIG_PACKAGE_coreutils-stty=y
-          # ⚠️ 关键修正（第20轮根因）：SNAPSHOT 的 olddefconfig 在“先 defconfig 再 cat>> 追加”流程里
-          # 不会把追加包的依赖库（DEPENDS 的 +libxxx）自动 select 进 .config，
-          # 导致这些库从未被打成独立包、无 *.provides，进而 mount-utils/tar/curl 等打包时
-          # 报 “missing dependencies for libxxx.so.N”。必须显式声明所有底层库包：
+          # ⚠️ 关键修正：olddefconfig 不会补全追加包的依赖库（ruby→libruby/zlib 等会保持 not set），
+          # 导致打包报 “missing dependencies”。已改用 make defconfig 自动 select 所有 DEPENDS+ 依赖；
+          # 以下仍显式声明底层库包作为双保险（防止个别 SNAPSHOT 版本 defconfig 补全不全）：
           CONFIG_PACKAGE_libacl=y
           CONFIG_PACKAGE_libattr=y
           CONFIG_PACKAGE_libcurl=y
@@ -106,9 +105,14 @@ jobs:
           CONFIG_PACKAGE_libffi=y
           CONFIG_PACKAGE_libyaml=y
           CONFIG_PACKAGE_libopenssl=y
+          # ruby 运行时直接依赖（其 DEPENDS +libruby/+zlib 需 defconfig 补全，这里显式双保险）
+          CONFIG_PACKAGE_zlib=y
+          CONFIG_PACKAGE_libruby=y
           EOF
-          # 收敛：olddefconfig 自动选依赖。若报 out-of-sync（某些符号不可满足），用 oldconfig 非交互兜底
-          make olddefconfig 2>&1 | tail -5 || { echo "WARN: olddefconfig non-zero, fallback to oldconfig"; yes '' | make oldconfig >/dev/null 2>&1; }
+          # 收敛：必须用 make defconfig（而非 olddefconfig）！olddefconfig 不会重新评估已追加包的
+          # DEPENDS +xxx 依赖链，导致 ruby→libruby/zlib/libgmp 等子库保持 not set、无 *.provides，
+          # 打包时误报 “missing dependencies”。make defconfig 会重新解析并自动 select 所有依赖库。
+          make defconfig 2>&1 | tail -5 || { echo "WARN: defconfig non-zero, fallback to oldconfig"; yes '' | make oldconfig >/dev/null 2>&1; }
           # 诊断：用 OpenWrt 官方 diffconfig 正确显示有效配置中我们关心的包
           echo "=== diffconfig (effective config) ==="
           ./scripts/diffconfig.sh 2>/dev/null | grep -E "cudy_tr3600|openclash|luci-app-store|luci |bash|ip-full|mount-utils|kmod-tun|kmod-inet-diag|ruby|dnsmasq-full|curl|ca-bundle|ipset|unzip|tar|libuci-lua|taskd|coreutils" | sort
@@ -124,7 +128,7 @@ jobs:
           grep -qx 'CONFIG_PACKAGE_luci-app-store=y' .config || { echo "FATAL: istore lost before build"; exit 1; }
           # 预编译所有会被并行打包竞态影响的“库包”（含 util-linux 内部库），单线程干净构建，
           # 确保 *.provides 先落盘，避免 mount-utils/tar/curl 等报 “missing dependencies”
-          for lib in package/utils/util-linux/compile package/libs/acl/compile package/libs/attr/compile package/libs/openssl/compile package/libs/curl/compile; do
+          for lib in package/utils/util-linux/compile package/libs/acl/compile package/libs/attr/compile package/libs/openssl/compile package/libs/curl/compile package/libs/zlib/compile; do
             echo "=== prebuild $lib (single-threaded) ==="
             make $lib -j1 V=s || { echo "WARN: prebuild $lib failed, will rely on main build retry"; }
           done
