@@ -70,9 +70,9 @@ jobs:
           # 2) [诊断] 关键包在 kconfig 树中的真实条目（depends/select/可见性）。
           #    若本轮仍丢包，这些条目就是取证依据。
           echo "=== [DIAG] kconfig entries for drop-prone packages ==="
-          for p in luci-app-store luci-lib-taskd taskd tar ca-bundle luci luci-light luci-app-package-manager luci-base libruby; do
+          for p in luci-app-store luci-lib-taskd taskd tar ca-bundle luci luci-light luci-app-package-manager luci-base libruby xz xz-utils liblzma bzip2 libbz2 libzstd; do
             echo "--- config PACKAGE_${p} ---"
-            grep -A14 "^[[:space:]]*config PACKAGE_${p}\$" tmp/.config-package.in 2>/dev/null || echo "(symbol not in kconfig tree)"
+            grep -A14 "config PACKAGE_${p}\$" tmp/.config-package.in 2>/dev/null || echo "(symbol not in kconfig tree)"
           done
           # 3) 最小 seed 重写 .config（不是追加！）：target/device 三行 + 全部功能包与底层库。
           #    底层库显式声明是双保险（第19-21轮：依赖库未选中 → 打包 missing dependencies）。
@@ -106,6 +106,17 @@ jobs:
           CONFIG_PACKAGE_unzip=y
           CONFIG_PACKAGE_libuci-lua=y
           CONFIG_PACKAGE_tar=y
+          # tar 的条件依赖链（第30轮 kconfig 内省实锤）：luci-app-store 继承了 tar 的
+          # `depends on !(PACKAGE_TAR_XZ) || PACKAGE_xz-utils` —— tar=y 时 TAR_XZ 默认 y，
+          # 若 xz-utils 未选中则该 depends 不满足 → store 被 kconfig 静默强制为 n。
+          # 必须显式选中 xz/xz-utils/liblzma（及 bzip2/libzstd 等 TAR_* 条件子项依赖）：
+          CONFIG_PACKAGE_xz=y
+          CONFIG_PACKAGE_xz-utils=y
+          CONFIG_PACKAGE_liblzma=y
+          CONFIG_PACKAGE_bzip2=y
+          CONFIG_PACKAGE_libbz2=y
+          CONFIG_PACKAGE_zstd=y
+          CONFIG_PACKAGE_libzstd=y
           CONFIG_PACKAGE_mount-utils=y
           CONFIG_PACKAGE_coreutils=y
           CONFIG_PACKAGE_coreutils-stty=y
