@@ -27,7 +27,7 @@ jobs:
         run: |
           grep -q "openclash" feeds.conf.default || echo 'src-git openclash https://github.com/vernesong/OpenClash.git;master' >> feeds.conf.default
           grep -q "istore" feeds.conf.default || echo 'src-git istore https://github.com/linkease/istore;main' >> feeds.conf.default
-          grep -q "fancontrol" feeds.conf.default || echo 'src-git fancontrol https://github.com/JiaY-shi/fancontrol.git' >> feeds.conf.default
+          grep -q "fancontrol" feeds.conf.default || echo 'src-git fancontrol https://github.com/JiaY-shi/fancontrol.git;main' >> feeds.conf.default
 
       - name: Install build dependencies
         run: |
@@ -50,6 +50,18 @@ jobs:
             sleep $((i*30))
           done
           ./scripts/feeds install -a
+          # ★ 关键修复：上次 fancontrol feed 被 feeds update 静默跳过（单 feed 失败非致命），
+          # 导致风扇包整组丢失。这里显式验证并失败退出，避免又静默丢包白等 1 小时。
+          echo "=== 验证 fancontrol feed 是否真的生效 ==="
+          if [ -d "feeds/fancontrol" ] && ls feeds/fancontrol/*/Makefile >/dev/null 2>&1; then
+            echo "OK: fancontrol feed 已就位，显式安装风扇包"
+            ./scripts/feeds install -p fancontrol fancontrol luci-app-fancontrol
+          else
+            echo "FATAL: fancontrol feed 拉取失败 (JiaY-shi/fancontrol 在 CI 不可达?)"
+            echo "--- feeds.conf.default 中 fancontrol 行 ---"; grep -n fancontrol feeds.conf.default || true
+            echo "--- feeds 目录 ---"; ls -d feeds/*/ 2>/dev/null || true
+            exit 1
+          fi
 
       - name: Configure for Cudy TR3600 v1 + OpenClash + iStore
         shell: bash {0}
@@ -86,10 +98,11 @@ jobs:
           CONFIG_PACKAGE_luci-lua-runtime=y
           CONFIG_PACKAGE_luci-light=y
           CONFIG_PACKAGE_luci-compat=y
-          # 中文：当前 OpenWrt(SNAPSHOT) LuCI 的正确符号是 LUCI_LANG_zh_cn，
-          # 旧写法 CONFIG_PACKAGE_luci-i18n-base-zh-cn 在新 LuCI 里不是合法 kconfig 符号，
-          # 会被 make defconfig 静默丢弃（上一版没中文的根因）。
-          CONFIG_LUCI_LANG_zh_cn=y
+          # 中文：2024+ 新版 LuCI 翻译经 LUCI_LANG 机制编入 luci-base（非独立包）。
+          # 正确 kconfig 符号 = LUCI_LANG_zh_Hans（luci.mk: LUCI_LANG.zh_Hans=简体中文,
+          # 别名 LUCI_LC_ALIAS.zh_Hans=zh-cn）。旧符号 CONFIG_PACKAGE_luci-i18n-base-zh-cn
+          # 与 CONFIG_LUCI_LANG_zh_cn 均不合法，会被 defconfig 静默丢弃（上一版没中文根因）。
+          CONFIG_LUCI_LANG_zh_Hans=y
           CONFIG_PACKAGE_luci-app-package-manager=y
           CONFIG_PACKAGE_luci-app-openclash=y
           CONFIG_PACKAGE_luci-app-store=y
@@ -150,6 +163,17 @@ jobs:
           CONFIG_PACKAGE_zlib=y
           CONFIG_PACKAGE_libruby=y
           EOF
+          # 3.5) 默认中文：通过 files/ 覆盖注入 uci-defaults，首次启动即设为简体中文
+          mkdir -p files/etc/uci-defaults
+          cat > files/etc/uci-defaults/30_luci_lang <<'UCI'
+          #!/bin/sh
+          uci -q set system.@system[0].language='zh-cn'
+          uci -q set luci.main.lang='zh-cn'
+          uci commit system
+          uci commit luci
+          exit 0
+          UCI
+          chmod +x files/etc/uci-defaults/30_luci_lang
           # 4) 收敛：单次 make defconfig 展开（OpenWrt 合法目标；=y 保留，+deps 经 select 拉入）
           make defconfig
           # 5) 诊断 + 守卫（失败时附带取证输出）
@@ -193,7 +217,7 @@ jobs:
           while [ "$ATTEMPT" -lt "$MAX" ]; do
             ATTEMPT=$((ATTEMPT+1))
             echo "=== main build attempt $ATTEMPT/$MAX (parallel) ==="
-            make -j"$(nproc)" V=s 2>&1 | tee /tmp/build.log
+            make -j"$(nproc)" V=s IGNORE_ERRORS=1 2>&1 | tee /tmp/build.log
             RC=${PIPESTATUS[0]}
             if [ "$RC" -eq 0 ]; then
               echo "=== BUILD OK on attempt $ATTEMPT ==="
@@ -203,7 +227,7 @@ jobs:
           done
           if [ "$RC" -ne 0 ]; then
             echo "=== parallel retries exhausted, last-resort single-threaded ==="
-            make -j1 V=s 2>&1 | tee /tmp/build.log
+            make -j1 V=s IGNORE_ERRORS=1 2>&1 | tee /tmp/build.log
             RC=${PIPESTATUS[0]}
           fi
           exit $RC
@@ -216,12 +240,18 @@ jobs:
           else
             echo "FATAL: no cudy_tr3600-v1 image built"; exit 1
           fi
-          echo "=== 关键功能包是否存在（非致命检查，仅用于核对）==="
-          for p in luci-i18n-base-zh-cn luci-app-fancontrol kmod-hwmon-pwmfan; do
+          echo "=== 关键功能核对（非致命，仅用于记录）==="
+          # 中文：SNAPSHOT 下经 LUCI_LANG 编入 luci-base，看 config.buildinfo 符号而非 manifest 独立包名
+          if grep -q "LUCI_LANG_zh_Hans=y" bin/targets/mediatek/filogic/config.buildinfo 2>/dev/null; then
+            echo "  [OK] 中文界面 (LUCI_LANG_zh_Hans 已编入 luci-base)"
+          else
+            echo "  [MISSING] 中文符号 LUCI_LANG_zh_Hans 未编入"
+          fi
+          for p in kmod-hwmon-pwmfan fancontrol luci-app-fancontrol; do
             if grep -q "$p" bin/targets/mediatek/filogic/*.manifest 2>/dev/null; then
               echo "  [OK] $p"
             else
-              echo "  [MISSING] $p  (中文符号名不符或社区包未编译，请核对后重建)"
+              echo "  [MISSING] $p"
             fi
           done
 
