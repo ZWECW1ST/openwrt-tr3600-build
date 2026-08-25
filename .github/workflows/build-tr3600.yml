@@ -55,18 +55,30 @@ jobs:
         working-directory: openwrt
         run: |
           set -e
-          # 1) 先生成默认配置（基于当前 SNAPSHOT feeds 的真实菜单，不会产生 out-of-sync）
+          # ★ 配置方法论（17轮失败换来的结论）：
+          #   - `make olddefconfig` 不是 OpenWrt 合法目标（toplevel.mk 只有 config/oldconfig/defconfig/
+          #     menuconfig/nconfig）→ 落到 %:: 兜底报 “out of sync … Error 1”（第15-18/28-29轮）。
+          #   - `yes '' | make oldconfig` 会把所有新包按默认值设为 =m（OpenWrt 包默认 "m if ALL"），
+          #     导致镜像组装 “no such package”（第26轮 package/install Error 55）。
+          #   - “先全量 defconfig 再 cat>> 追加再 defconfig” 会让部分追加包被静默丢弃（第22/27轮
+          #     luci-app-store/tar/ca-bundle/luci 消失，且无 kconfig 警告）。
+          #   - 社区标准做法（P3TERX 等）：.config 只写最小 seed（target/device + 要的包），
+          #     然后单次 make defconfig 展开。符号只出现一次，无残留默认配置干扰。
+          # 1) 第一次 defconfig：仅为生成 tmpinfo（kconfig 包树 tmp/.config-package.in），
+          #    其产生的 .config 马上会被最小 seed 覆盖。
           make defconfig
-          # 2) OpenWrt 标准做法：直接追加包符号到 .config（package 层符号由 make 的 kconfig 子系统识别）。
-          #    设备符号用连字符 cudy_tr3600-v1（对应 image/filogic.mk 的 define Device/cudy_tr3600-v1）。
-          #
-          #    ⚠️ 关键历史教训（第22/27轮）：第二次若用 make defconfig 收敛，它会“重新评估并禁用依赖看似不满足
-          #       的 =y 符号”——把 luci-app-store 直接丢掉（diffconfig 里完全消失），导致 FATAL: istore lost。
-          #       故必须显式声明 luci-app-store 经 luci.mk 隐含的 luci 运行时链（luci-lua-runtime 等），
-          #       确保其依赖可满足、defconfig/olddefconfig 都不会丢它。
-          #    ⚠️ 关键历史教训（第19-21轮）：olddefconfig 不会把追加包的“DEPENDS 依赖库”自动 select 进来，
-          #       所以所有底层库包（lib*/zlib/libruby 等）必须在此显式声明，否则打包报 missing dependencies。
-          cat >> .config <<'EOF'
+          # 2) [诊断] 关键包在 kconfig 树中的真实条目（depends/select/可见性）。
+          #    若本轮仍丢包，这些条目就是取证依据。
+          echo "=== [DIAG] kconfig entries for drop-prone packages ==="
+          for p in luci-app-store luci-lib-taskd taskd tar ca-bundle luci luci-light luci-app-package-manager luci-base libruby; do
+            echo "--- config PACKAGE_${p} ---"
+            grep -A14 "^[[:space:]]*config PACKAGE_${p}\$" tmp/.config-package.in 2>/dev/null || echo "(symbol not in kconfig tree)"
+          done
+          # 3) 最小 seed 重写 .config（不是追加！）：target/device 三行 + 全部功能包与底层库。
+          #    底层库显式声明是双保险（第19-21轮：依赖库未选中 → 打包 missing dependencies）。
+          cat > .config <<'EOF'
+          CONFIG_TARGET_mediatek=y
+          CONFIG_TARGET_mediatek_filogic=y
           CONFIG_TARGET_mediatek_filogic_DEVICE_cudy_tr3600-v1=y
           CONFIG_PACKAGE_luci=y
           CONFIG_PACKAGE_luci-base=y
@@ -74,6 +86,7 @@ jobs:
           CONFIG_PACKAGE_luci-light=y
           CONFIG_PACKAGE_luci-compat=y
           CONFIG_PACKAGE_luci-i18n-base-zh-cn=y
+          CONFIG_PACKAGE_luci-app-package-manager=y
           CONFIG_PACKAGE_luci-app-openclash=y
           CONFIG_PACKAGE_luci-app-store=y
           CONFIG_PACKAGE_luci-lib-taskd=y
@@ -96,7 +109,8 @@ jobs:
           CONFIG_PACKAGE_mount-utils=y
           CONFIG_PACKAGE_coreutils=y
           CONFIG_PACKAGE_coreutils-stty=y
-          # 底层库包显式声明（olddefconfig 不自动 select 依赖库，必须手动列出，否则打包 missing dependencies）
+          CONFIG_PACKAGE_script-utils=y
+          CONFIG_PACKAGE_procd=y
           CONFIG_PACKAGE_libacl=y
           CONFIG_PACKAGE_libattr=y
           CONFIG_PACKAGE_libcurl=y
@@ -117,18 +131,12 @@ jobs:
           CONFIG_PACKAGE_zlib=y
           CONFIG_PACKAGE_libruby=y
           EOF
-          # 3) 收敛：用 make olddefconfig（保留所有显式 =y，包括 luci-app-store，绝不丢包）。
-          #    ⚠️ 不要用 make defconfig：defconfig 会重新评估并“禁用依赖看似不满足”的 =y 符号，
-          #       把 luci-app-store 丢掉（第22/27轮正是因此 FATAL: istore lost）。
-          #    ⚠️ 绝不要 `|| yes '' | make oldconfig`：oldconfig 会按默认值把新增未决符号填 N，
-          #       清空依赖子树（第26轮因此 package/install Error 55）。
-          #    olddefconfig 在“先 defconfig 再 cat>>”流程下不会 out-of-sync（out-of-sync 仅发生在用 scripts/config 错写时，第15-18轮）。
-          make olddefconfig
-          # 4) 诊断：用 OpenWrt 官方 diffconfig 正确显示有效配置中我们关心的包
+          # 4) 收敛：单次 make defconfig 展开（OpenWrt 合法目标；=y 保留，+deps 经 select 拉入）
+          make defconfig
+          # 5) 诊断 + 守卫（失败时附带取证输出）
           echo "=== diffconfig (effective config) ==="
           ./scripts/diffconfig.sh 2>/dev/null | grep -E "cudy_tr3600|openclash|luci-app-store|luci-base|rpcd|ucode|bash|ip-full|mount-utils|kmod-tun|kmod-inet-diag|ruby|dnsmasq-full|curl|ca-bundle|ipset|unzip|tar|libuci-lua|taskd|coreutils" | sort
-          # 5) 守卫：确保关键功能包及其**基础依赖**确实进入 .config。仅查顶层包会被“半成品配置”放行
-          #    （第26轮 luci-app-store=y 仍在，但其依赖的 luci-base/rpcd/ucode 已被清空），故必须校验基础子树。
+          MISSING=0
           for sym in \
             CONFIG_TARGET_mediatek_filogic_DEVICE_cudy_tr3600-v1=y \
             CONFIG_PACKAGE_luci-app-openclash=y \
@@ -136,8 +144,14 @@ jobs:
             CONFIG_PACKAGE_luci-base=y \
             CONFIG_PACKAGE_rpcd=y \
             CONFIG_PACKAGE_ucode=y ; do
-            if ! grep -qx "$sym" .config; then echo "FATAL: $sym missing after configure (dependency not satisfied or dropped by defconfig)"; exit 1; fi
+            if ! grep -qx "$sym" .config; then echo "MISSING: $sym"; MISSING=1; fi
           done
+          if [ "$MISSING" -ne 0 ]; then
+            echo "=== [DIAG] .config 中相关符号实际状态 ==="
+            grep -nE "luci-app-store|PACKAGE_tar|ca-bundle|PACKAGE_luci=|PACKAGE_luci-light|taskd" .config || true
+            echo "FATAL: critical symbols missing after configure (see [DIAG] kconfig entries above)"
+            exit 1
+          fi
           echo "=== DONE CONFIGURE ==="
 
       - name: Build firmware
@@ -145,7 +159,7 @@ jobs:
         working-directory: openwrt
         run: |
           set -o pipefail
-          # 守卫：复用 Configure 已验证的关键符号（olddefconfig 不丢已显式 =y 的包，这里二次确认）
+          # 守卫：复用 Configure 已验证的关键符号（最小 seed + defconfig 已确保，这里二次确认）
           grep -qx 'CONFIG_TARGET_mediatek_filogic_DEVICE_cudy_tr3600-v1=y' .config || { echo "FATAL: device symbol lost before build"; exit 1; }
           grep -qx 'CONFIG_PACKAGE_luci-app-openclash=y' .config || { echo "FATAL: openclash lost before build"; exit 1; }
           grep -qx 'CONFIG_PACKAGE_luci-app-store=y' .config || { echo "FATAL: istore lost before build"; exit 1; }
