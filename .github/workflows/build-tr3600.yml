@@ -27,6 +27,7 @@ jobs:
         run: |
           grep -q "openclash" feeds.conf.default || echo 'src-git openclash https://github.com/vernesong/OpenClash.git;master' >> feeds.conf.default
           grep -q "istore" feeds.conf.default || echo 'src-git istore https://github.com/linkease/istore;main' >> feeds.conf.default
+          grep -q "fancontrol" feeds.conf.default || echo 'src-git fancontrol https://github.com/JiaY-shi/fancontrol.git' >> feeds.conf.default
 
       - name: Install build dependencies
         run: |
@@ -85,7 +86,10 @@ jobs:
           CONFIG_PACKAGE_luci-lua-runtime=y
           CONFIG_PACKAGE_luci-light=y
           CONFIG_PACKAGE_luci-compat=y
-          CONFIG_PACKAGE_luci-i18n-base-zh-cn=y
+          # 中文：当前 OpenWrt(SNAPSHOT) LuCI 的正确符号是 LUCI_LANG_zh_cn，
+          # 旧写法 CONFIG_PACKAGE_luci-i18n-base-zh-cn 在新 LuCI 里不是合法 kconfig 符号，
+          # 会被 make defconfig 静默丢弃（上一版没中文的根因）。
+          CONFIG_LUCI_LANG_zh_cn=y
           CONFIG_PACKAGE_luci-app-package-manager=y
           CONFIG_PACKAGE_luci-app-openclash=y
           CONFIG_PACKAGE_luci-app-store=y
@@ -113,6 +117,10 @@ jobs:
           CONFIG_PACKAGE_xz=y
           CONFIG_PACKAGE_xz-utils=y
           CONFIG_PACKAGE_liblzma=y
+          # 风扇控制：社区 pwm-fan 调速服务 + LuCI 控制台（TR3600 自带风扇，
+          # kmod-hwmon-pwmfan 已作为 device_package 编入镜像；此二项提供 Web 端风扇设置页）。
+          CONFIG_PACKAGE_fancontrol=y
+          CONFIG_PACKAGE_luci-app-fancontrol=y
           CONFIG_PACKAGE_bzip2=y
           CONFIG_PACKAGE_libbz2=y
           CONFIG_PACKAGE_zstd=y
@@ -208,6 +216,14 @@ jobs:
           else
             echo "FATAL: no cudy_tr3600-v1 image built"; exit 1
           fi
+          echo "=== 关键功能包是否存在（非致命检查，仅用于核对）==="
+          for p in luci-i18n-base-zh-cn luci-app-fancontrol kmod-hwmon-pwmfan; do
+            if grep -q "$p" bin/targets/mediatek/filogic/*.manifest 2>/dev/null; then
+              echo "  [OK] $p"
+            else
+              echo "  [MISSING] $p  (中文符号名不符或社区包未编译，请核对后重建)"
+            fi
+          done
 
       - name: Upload firmware artifact
         uses: actions/upload-artifact@v4
